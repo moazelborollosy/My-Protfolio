@@ -1,0 +1,16 @@
+# Copy this file to terraform.tfvars and fill in your values
+aws_profile           = "aws-aaelborollosy"
+aws_region            = "us-east-1"
+project               = "moaz-website"
+environment           = "prod"
+domain_name           = "moaz.elborollosy.com"
+parent_domain_name    = "elborollosy.com"
+
+# Specify your existing ACM certificate ARN located in us-east-1
+acm_certificate_arn   = "arn:aws:acm:us-east-1:123456789012:certificate/your-cert-uuid-here"
+
+# Route 53 creation flag (default: true)
+create_route53_record = true
+
+# (Optional) Explicit Route 53 Hosted Zone ID override. If left empty, parent_domain_name will be looked up automatically.
+route53_zone_id       = ""
