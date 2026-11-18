@@ -84,6 +84,7 @@ def archive_current_cv() -> str | None:
         Key=archive_key,
         ContentType="application/pdf",
         MetadataDirective="REPLACE",
+        TaggingDirective="REPLACE",
     )
     return archive_key
 
@@ -238,6 +239,7 @@ def lambda_handler(event, context):
                 Key=STAGED_CV_KEY,
                 ContentType="application/pdf",
                 MetadataDirective="REPLACE",
+                TaggingDirective="REPLACE",
             )
             touch_last_modified(table, ts)
             return response(200, {"message": "Archived CV staged for next Update publish", "cv": list_cv_versions()})
@@ -279,6 +281,7 @@ def lambda_handler(event, context):
                 ContentType="application/pdf",
                 CacheControl="public, max-age=31536000",
                 MetadataDirective="REPLACE",
+                TaggingDirective="REPLACE",
             )
             s3_client.delete_object(Bucket=BUCKET_NAME, Key=STAGED_CV_KEY)
             cv_promoted = True
