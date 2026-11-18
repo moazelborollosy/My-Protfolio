@@ -1,0 +1,18 @@
+# ==============================================================================
+# PRODUCTION ENVIRONMENT CONFIGURATION (Tracked template — no secrets)
+# Usage:
+#   terraform workspace select default
+#   terraform apply -var-file="envs/prod.tfvars"
+# ==============================================================================
+
+aws_profile           = "aws-aaelborollosy"
+aws_region            = "us-east-1"
+project               = "moaz-website"
+application           = "moaz-portfolio"
+environment           = "prod"
+domain_name           = "moaz.elborollosy.com"
+parent_domain_name    = "elborollosy.com"
+create_route53_record = true
+
+# Specify your existing ACM certificate ARN located in us-east-1
+acm_certificate_arn   = "arn:aws:acm:us-east-1:123456789012:certificate/your-cert-uuid-here"

@@ -12,13 +12,19 @@ variable "aws_profile" {
 
 variable "project" {
   type        = string
-  description = "Project name tag"
+  description = "Project name prefix used for naming resources"
   default     = "moaz-website"
+}
+
+variable "application" {
+  type        = string
+  description = "Application tag value (separated from Environment tag for independent resource grouping)"
+  default     = "moaz-portfolio"
 }
 
 variable "environment" {
   type        = string
-  description = "Deployment environment name (e.g. prod, dev, v1)"
+  description = "Deployment environment tag and prefix (e.g. prod, staging, dev)"
   default     = "prod"
 }
 
@@ -36,7 +42,8 @@ variable "parent_domain_name" {
 
 variable "acm_certificate_arn" {
   type        = string
-  description = "ARN of existing ACM certificate in us-east-1 covering domain_name."
+  description = "ARN of existing ACM certificate in us-east-1 covering domain_name. Leave empty in staging to use default CloudFront certificate."
+  default     = ""
 }
 
 variable "create_route53_record" {
@@ -54,5 +61,11 @@ variable "route53_zone_id" {
 variable "bucket_name" {
   type        = string
   description = "Optional override for S3 bucket name."
+  default     = ""
+}
+
+variable "admin_email" {
+  type        = string
+  description = "Optional email address to provision as the initial Cognito Admin user (receives temporary password via email)."
   default     = ""
 }

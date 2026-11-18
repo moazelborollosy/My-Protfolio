@@ -1,22 +1,27 @@
 import { ArrowRight, Code2, Download, Mail } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { profileLinks } from '../data/portfolio';
+import { usePortfolio } from '../context/PortfolioContext';
 
 const ease = [0.22, 1, 0.36, 1] as const;
 
 export default function Hero() {
+  const { profile } = usePortfolio();
+  const profileLinks = profile.links;
+
   return (
     <section id="top" className="hero-section">
       <div className="page-shell hero-layout hero-layout--portraitless">
         <div className="hero-copy">
-          <p className="availability"><span /> Open to Werkstudent & internship roles</p>
+          <p className="availability">
+            <span /> {profile.availabilityHero}
+          </p>
           <motion.p
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.42, delay: 0.18, ease }}
             className="hero-kicker"
           >
-            Berlin, Germany · Mechatronics
+            {profile.kicker}
           </motion.p>
 
           <motion.h1
@@ -25,8 +30,8 @@ export default function Hero() {
             transition={{ duration: 0.58, delay: 0.28, ease }}
             className="hero-title"
           >
-            <span>Moaz</span>
-            <span className="hero-title-accent">Elborollosy</span>
+            <span>{profile.firstName}</span>
+            <span className="hero-title-accent">{profile.lastName}</span>
           </motion.h1>
 
           <motion.p
@@ -35,7 +40,7 @@ export default function Hero() {
             transition={{ duration: 0.52, delay: 0.42, ease }}
             className="hero-description"
           >
-            I design mechanisms, write control logic, and build software. Mechatronics Engineering student in Berlin, focused on robotics and automation.
+            {profile.heroDescription}
           </motion.p>
 
           <motion.div
@@ -45,13 +50,17 @@ export default function Hero() {
             className="hero-tags"
           >
             <div className="hero-tags-row">
-              {['Robotics', 'Automation', 'Embedded Systems'].map((item) => (
-                <span key={item} className="hero-skill-pill">{item}</span>
+              {profile.heroTagsRow1.map((item) => (
+                <span key={item} className="hero-skill-pill">
+                  {item}
+                </span>
               ))}
             </div>
             <div className="hero-tags-row">
-              {['C/C++', 'Python', 'ROS 2', 'SolidWorks'].map((item) => (
-                <span key={item} className="hero-skill-pill">{item}</span>
+              {profile.heroTagsRow2.map((item) => (
+                <span key={item} className="hero-skill-pill">
+                  {item}
+                </span>
               ))}
             </div>
           </motion.div>
@@ -90,7 +99,7 @@ export default function Hero() {
         <div className="hero-portrait">
           <img
             src={`${import.meta.env.BASE_URL}assets/moaz-portrait-transparent.png`}
-            alt="Moaz Elborollosy"
+            alt={`${profile.firstName} ${profile.lastName}`}
             className="hero-portrait-image"
             width="1024"
             height="1536"
@@ -107,7 +116,9 @@ export default function Hero() {
         className="hero-scroll"
         aria-label="Scroll to about section"
       >
-        <span className="hero-mouse"><i /></span>
+        <span className="hero-mouse">
+          <i />
+        </span>
         <span>Scroll down</span>
         <i className="hero-scroll-line" />
       </motion.a>

@@ -2,6 +2,7 @@
 aws_profile           = "aws-aaelborollosy"
 aws_region            = "us-east-1"
 project               = "moaz-website"
+application           = "moaz-portfolio"
 environment           = "prod"
 domain_name           = "moaz.elborollosy.com"
 parent_domain_name    = "elborollosy.com"

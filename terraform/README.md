@@ -1,20 +1,29 @@
-# Terraform Infrastructure (AWS S3 + CloudFront SPA Deployment)
+# Terraform Infrastructure (AWS S3 + CloudFront + DynamoDB + Cognito + API Gateway v2)
 
-This directory contains the Infrastructure as Code (IaC) configuration for deploying the frontend React SPA to AWS S3 and Amazon CloudFront for `moaz.elborollosy.com`.
+This directory contains the Infrastructure as Code (IaC) configuration for deploying the React SPA, Dynamic Portfolio CMS, and Edge-Cached CV PDF workflow for `moaz.elborollosy.com`.
 
 ## Architecture Overview
-* **Amazon S3**: Private bucket hosting the static site build files (`index.html`, JavaScript, CSS, assets).
-* **Amazon CloudFront**: Global Edge CDN with SSL/TLS termination using your existing ACM certificate.
-* **Origin Access Control (OAC)**: Enforces private S3 bucket access solely via CloudFront.
-* **SPA Routing**: Handles client-side React Router navigation by converting HTTP 403/404 origin errors to `/index.html` with HTTP 200.
-* **Route 53 (Optional)**: Creates alias A and AAAA DNS records if a hosted zone ID is provided.
+* **Amazon S3**: Private bucket hosting the static site build files (`index.html`, JS, CSS) and versioned CV PDFs (`/assets/Moaz-Elborollosy-CV.pdf` and `/assets/cv-history/*`).
+* **Amazon CloudFront**:
+  * `/` & `/assets/*`: Edge-cached static SPA & CV PDFs.
+  * `/api/portfolio`: Long-term edge-cached (`max-age=31536000`) public portfolio read endpoint.
+  * `/api/admin/*`: Uncached admin endpoints forwarding the `Authorization` header to API Gateway v2.
+* **Amazon DynamoDB**: Single-table (`pk`, `sk`) storing the `PROFILE#CONFIG` singleton and `ULID`-keyed collection items (`PROJECT`, `SKILL_GROUP`, `EDUCATION`, `ACHIEVEMENT`, `INTEREST`) ordered by `displayOrder`.
+* **Amazon Cognito**: Invite-only User Pool (`allow_admin_create_user_only = true`) for Admin authentication.
+* **Amazon API Gateway v2 (HTTP API)**: Validates Cognito JWT tokens natively at the API Gateway layer without a Lambda authorizer.
+* **AWS Lambda (Python 3.13 on `arm64` Graviton2)**:
+  * `portfolio-read`: Strict read-only IAM role serving `GET /api/portfolio`.
+  * `portfolio-admin`: Read/write IAM role serving `/api/admin/*` (item CRUD, reordering, CV PDF staging/archiving, and unified CloudFront invalidation on "Update").
 
 ## Files
-* `providers.tf`: Provider setup and default AWS tagging.
-* `variables.tf`: Input variable definitions.
-* `main.tf`: S3 bucket, CloudFront OAC, CloudFront distribution, S3 policy, and Route 53 records.
-* `outputs.tf`: Exported deployment endpoints and IDs.
-* `terraform.tfvars.example`: Configuration template for your local variables.
+* `providers.tf`: AWS & Archive providers.
+* `variables.tf`: Input variable definitions (including optional `admin_email`).
+* `main.tf`: S3 bucket, CloudFront OAC, CloudFront distribution with `/api/portfolio` and `/api/admin/*` cache behaviors, and Route 53 records.
+* `dynamodb.tf`: DynamoDB single-table definition and initial portfolio seed items.
+* `cognito.tf`: Cognito User Pool, SPA App Client, and optional initial admin user.
+* `lambda.tf`: `portfolio-read` and `portfolio-admin` Python 3.13 `arm64` functions and least-privilege IAM roles.
+* `apigateway.tf`: HTTP API Gateway v2, native Cognito JWT Authorizer, and routes.
+* `outputs.tf`: Exported deployment endpoints, DynamoDB table name, and Cognito IDs.
 
 ## Deployment Instructions
 

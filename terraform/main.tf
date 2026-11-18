@@ -1,11 +1,17 @@
 locals {
-  prefix         = "${var.project}-${var.environment}"
+  env            = terraform.workspace != "default" ? terraform.workspace : var.environment
+  prefix         = "${var.project}-${local.env}"
   s3_bucket_name = var.bucket_name != "" ? var.bucket_name : "${local.prefix}-frontend"
   origin_id      = "S3-${local.s3_bucket_name}"
 
+  # Use custom domain & ACM cert whenever create_route53_record is true and an ACM cert ARN is provided
+  use_custom_domain = var.create_route53_record && var.acm_certificate_arn != "" && var.domain_name != ""
+
+  # Applied automatically via provider default_tags AND explicitly on all taggable resources
   common_tags = {
+    Application = var.application
+    Environment = local.env
     Project     = var.project
-    Environment = var.environment
     ManagedBy   = "Terraform"
   }
 
@@ -26,7 +32,7 @@ locals {
     "ttf"   = "font/ttf"
   }
 
-  route53_zone_id = var.route53_zone_id != "" ? var.route53_zone_id : (var.create_route53_record ? data.aws_route53_zone.parent[0].zone_id : "")
+  route53_zone_id = var.route53_zone_id != "" ? var.route53_zone_id : (local.use_custom_domain ? data.aws_route53_zone.parent[0].zone_id : "")
 }
 
 # ==============================================================================
@@ -36,6 +42,10 @@ locals {
 resource "aws_s3_bucket" "website" {
   bucket        = local.s3_bucket_name
   force_destroy = true
+
+  tags = merge(local.common_tags, {
+    Name = local.s3_bucket_name
+  })
 }
 
 resource "aws_s3_bucket_public_access_block" "website" {
@@ -59,6 +69,10 @@ resource "aws_s3_object" "frontend_assets" {
   source       = "${path.module}/../front-end/dist/${each.value}"
   etag         = filemd5("${path.module}/../front-end/dist/${each.value}")
   content_type = lookup(local.mime_types, regexall("\\.([^.]+)$", each.value)[0][0], "application/octet-stream")
+
+  lifecycle {
+    ignore_changes = [etag, source]
+  }
 }
 
 # ==============================================================================
@@ -109,16 +123,75 @@ resource "aws_s3_bucket_policy" "website" {
 resource "aws_cloudfront_distribution" "website" {
   enabled             = true
   is_ipv6_enabled     = true
-  comment             = "CloudFront distribution for ${var.domain_name} (${var.environment})"
+  comment             = "CloudFront distribution for ${var.application} (${local.env})"
   default_root_object = "index.html"
-  aliases             = [var.domain_name]
+  aliases             = local.use_custom_domain ? [var.domain_name] : []
   price_class         = "PriceClass_100"
 
-  # Origin: S3 Bucket for Static SPA Content
+  tags = merge(local.common_tags, {
+    Name = "${local.prefix}-cdn"
+  })
+
+  # Origin 1: S3 Bucket for Static SPA Content & Edge-Cached CV PDFs
   origin {
     domain_name              = aws_s3_bucket.website.bucket_regional_domain_name
     origin_id                = local.origin_id
     origin_access_control_id = aws_cloudfront_origin_access_control.website.id
+  }
+
+  # Origin 2: HTTP API Gateway v2 for Portfolio Read & Protected Admin CMS
+  origin {
+    domain_name = replace(aws_apigatewayv2_api.http_api.api_endpoint, "https://", "")
+    origin_id   = "APIGateway-${aws_apigatewayv2_api.http_api.id}"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  # Behavior 1: Long-Term Edge-Cached Public Portfolio Data (Invalidated on Admin "Update")
+  ordered_cache_behavior {
+    path_pattern     = "/api/portfolio"
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "APIGateway-${aws_apigatewayv2_api.http_api.id}"
+
+    viewer_protocol_policy = "redirect-to-https"
+    compress               = true
+    min_ttl                = 0
+    default_ttl            = 86400
+    max_ttl                = 31536000
+
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+  }
+
+  # Behavior 2: Uncached Protected Admin API (Forwards Authorization JWT to API Gateway v2)
+  ordered_cache_behavior {
+    path_pattern     = "/api/admin/*"
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "APIGateway-${aws_apigatewayv2_api.http_api.id}"
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 0
+    max_ttl                = 0
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Authorization", "Origin", "Accept", "Content-Type"]
+      cookies {
+        forward = "none"
+      }
+    }
   }
 
   default_cache_behavior {
@@ -162,9 +235,10 @@ resource "aws_cloudfront_distribution" "website" {
   }
 
   viewer_certificate {
-    acm_certificate_arn      = var.acm_certificate_arn
-    ssl_support_method       = "sni-only"
-    minimum_protocol_version = "TLSv1.2_2021"
+    cloudfront_default_certificate = !local.use_custom_domain
+    acm_certificate_arn            = local.use_custom_domain ? var.acm_certificate_arn : null
+    ssl_support_method             = local.use_custom_domain ? "sni-only" : null
+    minimum_protocol_version       = local.use_custom_domain ? "TLSv1.2_2021" : "TLSv1"
   }
 }
 
@@ -173,13 +247,13 @@ resource "aws_cloudfront_distribution" "website" {
 # ==============================================================================
 
 data "aws_route53_zone" "parent" {
-  count        = (var.create_route53_record && var.route53_zone_id == "") ? 1 : 0
+  count        = (local.use_custom_domain && var.route53_zone_id == "") ? 1 : 0
   name         = var.parent_domain_name
   private_zone = false
 }
 
 resource "aws_route53_record" "website_a" {
-  count   = var.create_route53_record ? 1 : 0
+  count   = local.use_custom_domain ? 1 : 0
   zone_id = local.route53_zone_id
   name    = var.domain_name
   type    = "A"
@@ -192,7 +266,7 @@ resource "aws_route53_record" "website_a" {
 }
 
 resource "aws_route53_record" "website_aaaa" {
-  count   = var.create_route53_record ? 1 : 0
+  count   = local.use_custom_domain ? 1 : 0
   zone_id = local.route53_zone_id
   name    = var.domain_name
   type    = "AAAA"
