@@ -50,6 +50,10 @@ def lambda_handler(event, context):
     )
 
     payload = {
+        "authConfig": {
+            "region": os.environ.get("COGNITO_REGION", "us-east-1"),
+            "clientId": os.environ.get("COGNITO_CLIENT_ID", ""),
+        },
         "profile": profile,
         "projects": sort_items(grouped["PROJECT"]),
         "skillGroups": sort_items(grouped["SKILL_GROUP"]),

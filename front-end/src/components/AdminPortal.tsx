@@ -7,13 +7,13 @@ import {
   EyeOff,
   FileText,
   History,
+  KeyRound,
   Lock,
   LogOut,
   Plus,
   RefreshCw,
   Rocket,
   Save,
-  Settings,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -21,9 +21,10 @@ import { useEffect, useState, type FormEvent } from 'react';
 import {
   clearSession,
   completeNewPasswordChallenge,
-  getCognitoConfig,
+  confirmForgotPasswordWithCode,
+  discoverCognitoConfig,
   getStoredSession,
-  saveCognitoConfig,
+  requestForgotPasswordCode,
   signInWithCognito,
   type CognitoAuthSession,
 } from '../utils/cognitoAuth';
@@ -31,6 +32,7 @@ import { generateCvPdfBase64 } from '../utils/cvPdfGenerator';
 import { AVAILABLE_ICON_NAMES } from '../utils/icons';
 
 type AdminTab = 'PROFILE' | 'PROJECT' | 'SKILL_GROUP' | 'EDUCATION' | 'ACHIEVEMENT' | 'INTEREST' | 'CV';
+type AuthScreenMode = 'SIGN_IN' | 'NEW_PASSWORD_CHALLENGE' | 'VERIFY_RESET_CODE';
 
 type CvVersionState = {
   activeKey: string;
@@ -50,16 +52,25 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 export default function AdminPortal() {
   const [session, setSession] = useState<CognitoAuthSession | null>(() => getStoredSession());
-  const [cognitoCfg, setCognitoCfg] = useState(() => getCognitoConfig());
-  const [showConfig, setShowConfig] = useState(() => !getCognitoConfig().clientId);
+  const [cognitoCfg, setCognitoCfg] = useState<{ region: string; clientId: string }>({
+    region: 'us-east-1',
+    clientId: '',
+  });
 
   // Login states
+  const [authMode, setAuthMode] = useState<AuthScreenMode>('SIGN_IN');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
   const [challengeSession, setChallengeSession] = useState<string | null>(null);
   const [authError, setAuthError] = useState('');
+  const [authInfo, setAuthInfo] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+
+  useEffect(() => {
+    discoverCognitoConfig().then((cfg) => setCognitoCfg(cfg));
+  }, []);
 
   // CMS Data states
   const [activeTab, setActiveTab] = useState<AdminTab>('PROJECT');
@@ -112,20 +123,30 @@ export default function AdminPortal() {
     }
   }, [session]);
 
+  async function ensureConfig() {
+    if (cognitoCfg.clientId) return cognitoCfg;
+    const discovered = await discoverCognitoConfig();
+    setCognitoCfg(discovered);
+    if (!discovered.clientId) {
+      throw new Error('Authentication config (/auth-config.json) not found on server. Please run terraform apply.');
+    }
+    return discovered;
+  }
+
   async function handleLogin(e: FormEvent) {
     e.preventDefault();
     setAuthError('');
-    if (!cognitoCfg.clientId) {
-      setAuthError('Please enter your Cognito App Client ID (from terraform output cognito_client_id).');
-      setShowConfig(true);
-      return;
-    }
-    saveCognitoConfig(cognitoCfg.region, cognitoCfg.clientId);
+    setAuthInfo('');
     setAuthLoading(true);
     try {
-      const res = await signInWithCognito(email, password, cognitoCfg.region, cognitoCfg.clientId);
+      const cfg = await ensureConfig();
+      const res = await signInWithCognito(email, password, cfg.region, cfg.clientId);
       if (res.status === 'NEW_PASSWORD_REQUIRED') {
         setChallengeSession(res.sessionToken);
+        setAuthMode('NEW_PASSWORD_CHALLENGE');
+      } else if (res.status === 'PASSWORD_RESET_REQUIRED') {
+        setAuthMode('VERIFY_RESET_CODE');
+        setAuthInfo('A password reset was requested for your account. Enter the verification code sent to your email and choose a new password.');
       } else {
         setSession(res.session);
       }
@@ -140,19 +161,66 @@ export default function AdminPortal() {
     e.preventDefault();
     if (!challengeSession) return;
     setAuthError('');
+    setAuthInfo('');
     setAuthLoading(true);
     try {
+      const cfg = await ensureConfig();
       const newSess = await completeNewPasswordChallenge(
         email,
         newPassword,
         challengeSession,
-        cognitoCfg.region,
-        cognitoCfg.clientId
+        cfg.region,
+        cfg.clientId
       );
       setChallengeSession(null);
+      setAuthMode('SIGN_IN');
       setSession(newSess);
     } catch (err: any) {
       setAuthError(err.message || 'Failed to set new password');
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleRequestResetCode() {
+    setAuthError('');
+    setAuthInfo('');
+    if (!email.trim()) {
+      setAuthError('Enter your Admin Email above first, then click "Send reset code".');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const cfg = await ensureConfig();
+      await requestForgotPasswordCode(email, cfg.region, cfg.clientId);
+      setAuthMode('VERIFY_RESET_CODE');
+      setAuthInfo(`Verification code sent to ${email.trim()}. Enter the code below along with your new password.`);
+    } catch (err: any) {
+      setAuthError(err.message || 'Could not send verification code');
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleConfirmResetCode(e: FormEvent) {
+    e.preventDefault();
+    setAuthError('');
+    setAuthInfo('');
+    setAuthLoading(true);
+    try {
+      const cfg = await ensureConfig();
+      await confirmForgotPasswordWithCode(email, verificationCode, newPassword, cfg.region, cfg.clientId);
+      // Automatically sign the user in with their newly set password
+      const loginRes = await signInWithCognito(email, newPassword, cfg.region, cfg.clientId);
+      if (loginRes.status === 'SUCCESS') {
+        setSession(loginRes.session);
+      } else {
+        setAuthMode('SIGN_IN');
+        setPassword('');
+        setAuthInfo('Password updated! You can now sign in with your new password.');
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Failed to verify reset code');
     } finally {
       setAuthLoading(false);
     }
@@ -381,54 +449,28 @@ export default function AdminPortal() {
       <div className="min-h-screen bg-[#030d17] text-slate-100 flex items-center justify-center p-6">
         <div className="panel w-full max-w-md rounded-2xl p-8 border border-white/10">
           <div className="flex items-center justify-between mb-6">
-            <a href="#top" onClick={() => (window.location.hash = '')} className="text-xs text-sky-300 flex items-center gap-1.5">
+            <a
+              href="#top"
+              onClick={() => (window.location.hash = '')}
+              className="text-xs text-sky-300 flex items-center gap-1.5"
+            >
               <ArrowLeft size={14} /> Back to Portfolio
             </a>
-            <button
-              type="button"
-              onClick={() => setShowConfig((v) => !v)}
-              className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
-            >
-              <Settings size={14} /> Cognito Setup
-            </button>
           </div>
 
           <div className="flex items-center gap-3 mb-2">
             <div className="h-10 w-10 rounded-xl bg-sky-500/15 border border-sky-400/30 flex items-center justify-center text-sky-300">
-              <Lock size={18} />
+              {authMode === 'VERIFY_RESET_CODE' ? <KeyRound size={18} /> : <Lock size={18} />}
             </div>
             <div>
               <h1 className="text-xl font-bold text-white">Portfolio Admin</h1>
-              <p className="text-xs text-slate-400">Cognito + API Gateway v2 JWT Auth</p>
+              <p className="text-xs text-slate-400">
+                {authMode === 'SIGN_IN' && 'Sign in with your Admin Email & Password'}
+                {authMode === 'NEW_PASSWORD_CHALLENGE' && 'First-time sign-in: Set your permanent password'}
+                {authMode === 'VERIFY_RESET_CODE' && 'Reset Password with Verification Code'}
+              </p>
             </div>
           </div>
-
-          {showConfig && (
-            <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3">
-              <div>
-                <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">AWS Region</label>
-                <input
-                  type="text"
-                  value={cognitoCfg.region}
-                  onChange={(e) => setCognitoCfg({ ...cognitoCfg, region: e.target.value })}
-                  className="w-full rounded-lg bg-[#051220] border border-white/15 px-3 py-2 text-sm text-white"
-                  placeholder="us-east-1"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
-                  Cognito App Client ID
-                </label>
-                <input
-                  type="text"
-                  value={cognitoCfg.clientId}
-                  onChange={(e) => setCognitoCfg({ ...cognitoCfg, clientId: e.target.value })}
-                  className="w-full rounded-lg bg-[#051220] border border-white/15 px-3 py-2 text-sm text-white font-mono"
-                  placeholder="From terraform output cognito_client_id"
-                />
-              </div>
-            </div>
-          )}
 
           {authError && (
             <div className="mt-4 rounded-lg border border-red-400/30 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-200">
@@ -436,7 +478,13 @@ export default function AdminPortal() {
             </div>
           )}
 
-          {!challengeSession ? (
+          {authInfo && (
+            <div className="mt-4 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3.5 py-2.5 text-xs text-sky-200">
+              {authInfo}
+            </div>
+          )}
+
+          {authMode === 'SIGN_IN' && (
             <form onSubmit={handleLogin} className="mt-6 space-y-4">
               <div>
                 <label className="block text-xs text-slate-300 mb-1.5">Admin Email</label>
@@ -450,7 +498,7 @@ export default function AdminPortal() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-300 mb-1.5">Password</label>
+                <label className="block text-xs text-slate-300 mb-1.5">Password (or Temporary Password)</label>
                 <input
                   type="password"
                   required
@@ -464,13 +512,36 @@ export default function AdminPortal() {
                 disabled={authLoading}
                 className="w-full hero-primary-btn min-h-[46px] text-sm"
               >
-                {authLoading ? 'Signing in...' : 'Sign In with Cognito'}
+                {authLoading ? 'Signing in...' : 'Sign In'}
               </button>
+
+              <div className="pt-2 flex items-center justify-between text-xs text-slate-400 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={handleRequestResetCode}
+                  className="hover:text-sky-300 transition"
+                >
+                  Forgot password? Send reset code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthError('');
+                    setAuthInfo('');
+                    setAuthMode('VERIFY_RESET_CODE');
+                  }}
+                  className="text-sky-300 hover:underline"
+                >
+                  Have a verification code?
+                </button>
+              </div>
             </form>
-          ) : (
+          )}
+
+          {authMode === 'NEW_PASSWORD_CHALLENGE' && (
             <form onSubmit={handleNewPassword} className="mt-6 space-y-4">
               <p className="text-xs text-amber-300">
-                First-time sign-in detected. Set your permanent password (min 12 chars, upper, lower, number, symbol):
+                Temporary password verified. Choose your permanent password (min 12 chars, uppercase, lowercase, number, and symbol):
               </p>
               <div>
                 <label className="block text-xs text-slate-300 mb-1.5">New Permanent Password</label>
@@ -488,7 +559,76 @@ export default function AdminPortal() {
                 disabled={authLoading}
                 className="w-full hero-primary-btn min-h-[46px] text-sm"
               >
-                {authLoading ? 'Updating Password...' : 'Complete Setup & Sign In'}
+                {authLoading ? 'Saving Password...' : 'Set Permanent Password & Sign In'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setChallengeSession(null);
+                  setAuthMode('SIGN_IN');
+                }}
+                className="w-full text-center text-xs text-slate-400 hover:text-white pt-1"
+              >
+                Back to Sign In
+              </button>
+            </form>
+          )}
+
+          {authMode === 'VERIFY_RESET_CODE' && (
+            <form onSubmit={handleConfirmResetCode} className="mt-6 space-y-4">
+              <p className="text-xs text-slate-300">
+                Enter the <strong>Verification Code</strong> sent by Cognito to your email and set your new permanent password (min 12 chars, upper, lower, number, symbol):
+              </p>
+              <div>
+                <label className="block text-xs text-slate-300 mb-1.5">Admin Email</label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full rounded-lg bg-[#051220] border border-white/15 px-3.5 py-2.5 text-sm text-white"
+                  placeholder="admin@elborollosy.com"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-300 mb-1.5">6-Digit Verification Code</label>
+                <input
+                  type="text"
+                  required
+                  value={verificationCode}
+                  onChange={(e) => setVerificationCode(e.target.value)}
+                  className="w-full rounded-lg bg-[#051220] border border-white/15 px-3.5 py-2.5 text-sm text-white font-mono tracking-widest"
+                  placeholder="123456"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-300 mb-1.5">New Permanent Password</label>
+                <input
+                  type="password"
+                  required
+                  minLength={12}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full rounded-lg bg-[#051220] border border-white/15 px-3.5 py-2.5 text-sm text-white"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={authLoading}
+                className="w-full hero-primary-btn min-h-[46px] text-sm"
+              >
+                {authLoading ? 'Verifying & Signing In...' : 'Confirm Code & Set New Password'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError('');
+                  setAuthInfo('');
+                  setAuthMode('SIGN_IN');
+                }}
+                className="w-full text-center text-xs text-slate-400 hover:text-white pt-1"
+              >
+                Back to Sign In
               </button>
             </form>
           )}

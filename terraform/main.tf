@@ -20,6 +20,8 @@ locals {
     "css"   = "text/css"
     "js"    = "application/javascript"
     "json"  = "application/json"
+    "xml"   = "application/xml"
+    "txt"   = "text/plain"
     "png"   = "image/png"
     "jpg"   = "image/jpeg"
     "jpeg"  = "image/jpeg"
@@ -62,16 +64,105 @@ resource "aws_s3_bucket_public_access_block" "website" {
 # ==============================================================================
 
 resource "aws_s3_object" "frontend_assets" {
-  for_each = fileset("${path.module}/../front-end/dist", "**/*")
+  for_each = toset([
+    for f in fileset("${path.module}/../front-end/dist", "**/*") : f
+    if f != "assets/Moaz-Elborollosy-CV.pdf" && f != "index.html"
+  ])
 
   bucket       = aws_s3_bucket.website.id
   key          = each.value
   source       = "${path.module}/../front-end/dist/${each.value}"
   etag         = filemd5("${path.module}/../front-end/dist/${each.value}")
   content_type = lookup(local.mime_types, regexall("\\.([^.]+)$", each.value)[0][0], "application/octet-stream")
+}
+
+# Parametric index.html: Rewrites static OpenGraph/Canonical domain to match the active environment (staging vs prod)
+resource "aws_s3_object" "index_html" {
+  bucket        = aws_s3_bucket.website.id
+  key           = "index.html"
+  content_type  = "text/html"
+  cache_control = "no-cache"
+  content = replace(
+    file("${path.module}/../front-end/dist/index.html"),
+    "https://moaz.elborollosy.com",
+    "https://${var.domain_name != "" ? var.domain_name : aws_cloudfront_distribution.website.domain_name}"
+  )
+}
+
+# Initial seed CV PDF — lifecycle ignore_changes ensures Admin Portal CV updates are never overwritten by Terraform
+resource "aws_s3_object" "initial_cv" {
+  bucket       = aws_s3_bucket.website.id
+  key          = "assets/Moaz-Elborollosy-CV.pdf"
+  source       = "${path.module}/../front-end/dist/assets/Moaz-Elborollosy-CV.pdf"
+  etag         = filemd5("${path.module}/../front-end/dist/assets/Moaz-Elborollosy-CV.pdf")
+  content_type = "application/pdf"
 
   lifecycle {
     ignore_changes = [etag, source]
+  }
+}
+
+# Environment-specific Cognito runtime config (auto-discovered by /admin with zero user setup)
+resource "aws_s3_object" "auth_config" {
+  bucket        = aws_s3_bucket.website.id
+  key           = "auth-config.json"
+  content_type  = "application/json"
+  cache_control = "no-cache"
+  content = jsonencode({
+    region      = var.aws_region
+    clientId    = aws_cognito_user_pool_client.admin.id
+    userPoolId  = aws_cognito_user_pool.admin.id
+    environment = local.env
+    domainName  = var.domain_name
+  })
+}
+
+# Parametric robots.txt: Allows indexing in prod (blocking /admin), and blocks all search indexing in non-prod (staging)
+resource "aws_s3_object" "robots_txt" {
+  bucket        = aws_s3_bucket.website.id
+  key           = "robots.txt"
+  content_type  = "text/plain"
+  cache_control = "public, max-age=3600"
+  content = local.env == "prod" ? join("\n", [
+    "User-agent: *",
+    "Allow: /",
+    "Disallow: /admin",
+    "Disallow: /api/admin/",
+    "Disallow: /auth-config.json",
+    "",
+    "Sitemap: https://${var.domain_name}/sitemap.xml",
+    ""
+    ]) : join("\n", [
+    "User-agent: *",
+    "Disallow: /",
+    ""
+  ])
+}
+
+# Parametric sitemap.xml generated dynamically using var.domain_name
+resource "aws_s3_object" "sitemap_xml" {
+  bucket        = aws_s3_bucket.website.id
+  key           = "sitemap.xml"
+  content_type  = "application/xml"
+  cache_control = "public, max-age=31536000"
+  content       = <<-EOT
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://${var.domain_name != "" ? var.domain_name : aws_cloudfront_distribution.website.domain_name}/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://${var.domain_name != "" ? var.domain_name : aws_cloudfront_distribution.website.domain_name}/assets/Moaz-Elborollosy-CV.pdf</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+</urlset>
+EOT
+
+  lifecycle {
+    ignore_changes = [content, etag]
   }
 }
 

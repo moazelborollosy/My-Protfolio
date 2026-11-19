@@ -75,7 +75,9 @@ resource "aws_lambda_function" "portfolio_read" {
 
   environment {
     variables = {
-      TABLE_NAME = aws_dynamodb_table.portfolio.name
+      TABLE_NAME        = aws_dynamodb_table.portfolio.name
+      COGNITO_CLIENT_ID = aws_cognito_user_pool_client.admin.id
+      COGNITO_REGION    = var.aws_region
     }
   }
 
@@ -170,7 +172,8 @@ resource "aws_iam_role_policy" "portfolio_admin" {
         Resource = [
           "${aws_s3_bucket.website.arn}/assets/Moaz-Elborollosy-CV.pdf",
           "${aws_s3_bucket.website.arn}/assets/cv-staged/*",
-          "${aws_s3_bucket.website.arn}/assets/cv-history/*"
+          "${aws_s3_bucket.website.arn}/assets/cv-history/*",
+          "${aws_s3_bucket.website.arn}/sitemap.xml"
         ]
       },
       {
@@ -213,6 +216,7 @@ resource "aws_lambda_function" "portfolio_admin" {
       TABLE_NAME      = aws_dynamodb_table.portfolio.name
       BUCKET_NAME     = aws_s3_bucket.website.id
       DISTRIBUTION_ID = aws_cloudfront_distribution.website.id
+      SITE_DOMAIN     = var.domain_name != "" ? var.domain_name : aws_cloudfront_distribution.website.domain_name
     }
   }
 

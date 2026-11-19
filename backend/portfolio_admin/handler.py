@@ -14,10 +14,12 @@ cf_client = boto3.client("cloudfront")
 TABLE_NAME = os.environ["TABLE_NAME"]
 BUCKET_NAME = os.environ["BUCKET_NAME"]
 DISTRIBUTION_ID = os.environ["DISTRIBUTION_ID"]
+SITE_DOMAIN = os.environ.get("SITE_DOMAIN", "moaz.elborollosy.com")
 
 ACTIVE_CV_KEY = "assets/Moaz-Elborollosy-CV.pdf"
 STAGED_CV_KEY = "assets/cv-staged/Moaz-Elborollosy-CV.pdf"
 HISTORY_PREFIX = "assets/cv-history/"
+SITEMAP_KEY = "sitemap.xml"
 
 CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -286,14 +288,41 @@ def lambda_handler(event, context):
             s3_client.delete_object(Bucket=BUCKET_NAME, Key=STAGED_CV_KEY)
             cv_promoted = True
 
+        # Regenerate sitemap.xml with latest <lastmod> date and upload to S3 for long-term edge caching
+        lastmod_date = ts[:10]
+        sitemap_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://{SITE_DOMAIN}/</loc>
+    <lastmod>{lastmod_date}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://{SITE_DOMAIN}/{ACTIVE_CV_KEY}</loc>
+    <lastmod>{lastmod_date}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+</urlset>
+"""
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=SITEMAP_KEY,
+            Body=sitemap_xml.encode("utf-8"),
+            ContentType="application/xml",
+            CacheControl="public, max-age=31536000",
+        )
+
         inv = cf_client.create_invalidation(
             DistributionId=DISTRIBUTION_ID,
             InvalidationBatch={
                 "Paths": {
-                    "Quantity": 2,
+                    "Quantity": 3,
                     "Items": [
                         "/api/portfolio",
                         f"/{ACTIVE_CV_KEY}",
+                        f"/{SITEMAP_KEY}",
                     ],
                 },
                 "CallerReference": f"publish-{time.time_ns()}",
